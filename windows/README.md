@@ -55,6 +55,31 @@ worse failure: if the key-down is swallowed but the key-up escapes — a hook th
 mid-gesture, or focus crossing into an elevated window — the target app believes Ctrl is
 held down forever.
 
+**The Copilot key is the one exception, and it is bindable.** Select `COPILOT` in Settings.
+
+That key is not a key. Firmware sends a chord about a millisecond apart — `LWin↓`,
+`LShift↓`, `F23↓` — and releases it in reverse: `F23↑`, `LShift↑`, `LWin↑`. F23 stays down
+while the key is held, which is the only reason push-to-talk works on it.
+
+Murmur binds **F23 alone** and swallows it, because passing it through opens Copilot on
+every dictation. Swallowing is safe here in the way it is not for a modifier: F23 holds no
+state, so a lost key-up leaves nothing stuck. The two modifiers are deliberately left
+alone — nothing distinguishes a synthesised `LWin` from a real one at the instant it
+arrives, so suppressing it would mean deferring and replaying every genuine Left Win press
+through a timer.
+
+One consequence needs handling: the shell opens the Start menu when Win is released with
+nothing pressed in between, and the only thing pressed in between was the F23 we just ate.
+So the hook taps Ctrl — harmless alone, harmless with Win — to spend that flag.
+
+Not every vendor ships this chord; some send Win+C. To see what a particular machine sends:
+
+```powershell
+.\Murmur.App.exe --keylog     # 15 seconds, prints every key event with its VK code
+```
+
+`0x86` in that trace means `COPILOT` will work on that keyboard.
+
 **CPU-only inference.** sherpa-onnx ships no GPU package; DirectML is five versions behind
 and forbids the variable tensor shapes this model requires; CUDA would force every user to
 install a toolkit. On CPU with int8 weights, transcription runs ~40× faster than real time.

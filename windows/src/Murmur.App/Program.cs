@@ -23,6 +23,14 @@ public static class Program
             return SelfTest.Run();
         }
 
+        // Vendors do not agree on what the Copilot key emits, and no amount of reasoning from
+        // here can settle it for a particular laptop. This prints what the keyboard actually
+        // sends, which turns the question into an observation.
+        if (args.Contains("--keylog", StringComparer.OrdinalIgnoreCase))
+        {
+            return KeyLog.Run();
+        }
+
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

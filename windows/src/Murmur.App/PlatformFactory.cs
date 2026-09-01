@@ -87,6 +87,49 @@ internal static class PlatformFactory
         return hook;
     }
 
+    /// <summary>
+    /// Whether the hook has a named key for this virtual-key code.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CreateHotkeySource"/> assigns through <c>Enum.ToObject</c>, which happily
+    /// accepts a number no member matches — the hook would then wait forever for a key nobody
+    /// presses. This is the difference between "it was set" and "it means something".
+    /// </remarks>
+    /// <param name="virtualKey">The code to look for.</param>
+    /// <returns>False off Windows, or if no member has that value.</returns>
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026:RequiresUnreferencedCode",
+        Justification = "Murmur.Platform.Windows is published whole and never trimmed.")]
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075:DynamicallyAccessedMembers",
+        Justification = "Murmur.Platform.Windows is published whole and never trimmed.")]
+    public static bool HotkeyRecognises(int virtualKey)
+    {
+        var type = Load()?.GetType($"{Namespace}.PushToTalkHook")?.GetProperty("Key")?.PropertyType;
+        return type is { IsEnum: true } && Enum.IsDefined(type, Enum.ToObject(type, virtualKey));
+    }
+
+    /// <summary>
+    /// Points the hook's trace hook-point at <paramref name="sink"/>, for <c>--keylog</c>.
+    /// </summary>
+    /// <param name="hotkey">A source from <see cref="CreateHotkeySource"/>.</param>
+    /// <param name="sink">Receives one line per key event, before any filtering.</param>
+    /// <returns>False if this build's hook has no trace hook-point.</returns>
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075:DynamicallyAccessedMembers",
+        Justification = "Murmur.Platform.Windows is published whole and never trimmed.")]
+    public static bool TryAttachTrace(IHotkeySource hotkey, Action<string> sink)
+    {
+        var property = hotkey.GetType().GetProperty("Trace");
+        if (property?.PropertyType != typeof(Action<string>)) return false;
+
+        property.SetValue(hotkey, sink);
+        return true;
+    }
+
     /// <summary>Creates the SendInput injector, or null off Windows.</summary>
     public static ITextInjector? CreateTextInjector() =>
         Create<ITextInjector>("SendInputTextInjector", []);

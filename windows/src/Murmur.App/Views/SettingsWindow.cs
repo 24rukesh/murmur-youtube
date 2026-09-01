@@ -26,6 +26,11 @@ public sealed class SettingsWindow : Window
         (0xA1, "RIGHT SHIFT", null),
         (0x14, "CAPS LOCK", null),
         (0x7C, "F13", null),
+        (0x86, "COPILOT", "The Copilot key is the one key Murmur swallows, so holding it "
+                        + "dictates instead of opening Copilot. It is not a single key: it "
+                        + "sends Left Win + Left Shift + F23, and only the F23 is taken. If "
+                        + "nothing happens when you hold it, run murmur --keylog to see what "
+                        + "your keyboard actually sends — a few vendors send Win+C instead."),
         (0xA5, "RIGHT ALT", "Right Alt is AltGr on many European layouts — binding it here "
                           + "will interfere with typing @, €, \\ and |."),
     ];
@@ -89,7 +94,9 @@ public sealed class SettingsWindow : Window
                     _keyRow,
                     _keyWarning,
                     Note("Hold this key anywhere to dictate. The key is passed through to the "
-                       + "focused app rather than swallowed, so it never gets stuck down."),
+                       + "focused app rather than swallowed, so it never gets stuck down — "
+                       + "the Copilot key is the single exception, because passing it on "
+                       + "would open Copilot every time you dictate."),
                 },
             }),
 

@@ -124,6 +124,15 @@ public static class SelfTest
         failures += Check("hotkey source constructs with Right Ctrl", hotkey is not null);
         hotkey?.Dispose();
 
+        // The Copilot key is set by value through the same reflection path, so a missing enum
+        // member would fail here rather than the first time someone held the key.
+        // Enum.ToObject accepts any number, so constructing proves nothing on its own — the
+        // binding would go quietly nowhere. This asks whether 0x86 is a key the hook knows.
+        var copilot = PlatformFactory.CreateHotkeySource(0x86);
+        failures += Check("hotkey source recognises the Copilot key",
+            copilot is not null && PlatformFactory.HotkeyRecognises(0x86));
+        copilot?.Dispose();
+
         return failures;
     }
 

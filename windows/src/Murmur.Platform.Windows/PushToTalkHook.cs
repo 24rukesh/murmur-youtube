@@ -33,6 +33,34 @@ public enum PushToTalkKey
 
     /// <summary>F13 — present on many full-size and gaming keyboards, bound to nothing.</summary>
     F13 = 0x7C,
+
+    /// <summary>
+    /// The Copilot key — <b>the one key this app swallows.</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The Copilot key is not a key. Firmware sends a three-event chord roughly a millisecond
+    /// apart — Left Win down, Left Shift down, F23 down — and releases it in reverse order:
+    /// F23 up, Left Shift up, Left Win up. F23 stays down for as long as the key is held,
+    /// which is the whole reason push-to-talk is possible on it at all.
+    /// </para>
+    /// <para>
+    /// It is matched on F23 (<c>0x86</c>) alone. The two modifiers are deliberately left
+    /// untouched: nothing distinguishes a synthesised Left Win from a real one at the moment
+    /// it arrives, so suppressing it would mean deferring and replaying every genuine Left Win
+    /// press through a timer.
+    /// </para>
+    /// <para>
+    /// F23 itself <i>is</i> swallowed — otherwise every dictation also opens Copilot or
+    /// Search. That is safe in the way swallowing a modifier is not: F23 is not a modifier, so
+    /// nothing is left stuck down if the key-up ever escapes.
+    /// </para>
+    /// <para>
+    /// Not every vendor ships this chord; some send Win+C instead. Run the app with
+    /// <c>--keylog</c> to see what a given machine actually sends.
+    /// </para>
+    /// </remarks>
+    CopilotKey = 0x86,
 }
 
 /// <summary>
@@ -60,6 +88,12 @@ public enum PushToTalkKey
 /// mid-gesture, or focus crossed into an elevated window), the target application believes
 /// the modifier is held down forever.
 /// </para>
+/// <para>
+/// <b>The one exception is <see cref="PushToTalkKey.CopilotKey"/>.</b> Passing its F23 through
+/// would open Copilot on every single dictation, which makes the binding useless rather than
+/// merely impolite. F23 is not a modifier, so the failure above is not reachable: the worst a
+/// lost key-up can do is leave this hook's own <c>_isDown</c> set, which the next press clears.
+/// </para>
 /// </remarks>
 public sealed class PushToTalkHook : IHotkeySource
 {
@@ -85,6 +119,8 @@ public sealed class PushToTalkHook : IHotkeySource
     private const int VK_RMENU = 0xA5;
 
     private const int ScanCodeRightShift = 0x36;
+
+    private const uint KEYEVENTF_KEYUP = 0x0002;
 
     /// <summary>
     /// Stamped into <c>dwExtraInfo</c> on every event this app injects, so our own Ctrl+V
@@ -139,6 +175,12 @@ public sealed class PushToTalkHook : IHotkeySource
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
+    // Two events and no INPUT marshalling, and it carries the same dwExtraInfo that keeps our
+    // own injection out of this hook. SendInput is the better API for typing text; for a bare
+    // modifier tap it is all ceremony.
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, IntPtr extraInfo);
+
     /// <summary>
     /// Roots the delegate for the lifetime of the hook.
     /// </summary>
@@ -158,6 +200,17 @@ public sealed class PushToTalkHook : IHotkeySource
 
     /// <summary>Which key triggers dictation.</summary>
     public PushToTalkKey Key { get; set; } = PushToTalkKey.RightControl;
+
+    /// <summary>
+    /// Set to receive every key event this hook sees, before filtering. Null in normal use.
+    /// </summary>
+    /// <remarks>
+    /// Vendors do not agree on what the Copilot key emits — the common chord is
+    /// Left Win + Left Shift + F23, but some machines send Win+C instead, and there is no way
+    /// to know which from here. <c>--keylog</c> sets this so the answer comes from the actual
+    /// keyboard rather than from a guess.
+    /// </remarks>
+    public Action<string>? Trace { get; set; }
 
     /// <inheritdoc />
     public event EventHandler? Pressed;
@@ -241,9 +294,11 @@ public sealed class PushToTalkHook : IHotkeySource
         var self = s_instance;
         if (code != HC_ACTION || self is null) return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
 
+        var swallow = false;
+
         try
         {
-            self.Handle(wParam, lParam);
+            swallow = self.Handle(wParam, lParam);
         }
         catch (Exception)
         {
@@ -251,18 +306,24 @@ public sealed class PushToTalkHook : IHotkeySource
             // thread with no useful context. Swallow and keep the chain intact.
         }
 
-        // Always chain. Microsoft: otherwise "other applications that have installed
+        // Returning non-zero ends the chain for this event. Reached only by the Copilot key's
+        // F23 — see PushToTalkKey.CopilotKey for why that one has to be eaten.
+        if (swallow) return (IntPtr)1;
+
+        // Otherwise always chain. Microsoft: otherwise "other applications that have installed
         // WH_KEYBOARD_LL hooks will not receive hook notifications and may behave
         // incorrectly as a result."
         return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
     }
 
-    private void Handle(IntPtr wParam, IntPtr lParam)
+    /// <summary>Handles one key event.</summary>
+    /// <returns>True to swallow it — only ever the Copilot key's F23.</returns>
+    private bool Handle(IntPtr wParam, IntPtr lParam)
     {
         var e = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
 
         // Ignore anything this app injected itself.
-        if (e.ExtraInfo == InjectedTag) return;
+        if (e.ExtraInfo == InjectedTag) return false;
 
         // ToInt32 rather than a cast: since .NET 7 an explicit (int)IntPtr conversion
         // silently truncates instead of throwing, which CA2020 flags. Window messages are
@@ -270,24 +331,58 @@ public sealed class PushToTalkHook : IHotkeySource
         var message = wParam.ToInt32();
         var isDown = message is WM_KEYDOWN or WM_SYSKEYDOWN;
         var isUp = message is WM_KEYUP or WM_SYSKEYUP;
-        if (!isDown && !isUp) return;
+        if (!isDown && !isUp) return false;
 
-        if (Normalize(e) != (int)Key) return;
+        var key = Normalize(e);
+
+        Trace?.Invoke($"{(isDown ? "down" : "up")}\tvk=0x{key:X2}\tscan=0x{e.ScanCode:X2}\tflags=0x{e.Flags:X2}");
+
+        if (key != (int)Key) return false;
+
+        // The Copilot key, and only the Copilot key, is eaten rather than observed.
+        var swallow = Key == PushToTalkKey.CopilotKey;
 
         if (isDown)
         {
             // The OS re-fires key-down while a key is held; only the first is a press.
-            if (_isDown) return;
+            if (_isDown) return swallow;
             _isDown = true;
+            if (swallow) DefuseStartMenu();
             Pressed?.Invoke(this, EventArgs.Empty);
         }
         else
         {
-            if (!_isDown) return;
+            if (!_isDown) return swallow;
             _isDown = false;
             Released?.Invoke(this, EventArgs.Empty);
         }
+
+        return swallow;
     }
+
+    /// <summary>
+    /// Taps Ctrl so that releasing the Copilot key does not open the Start menu.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The chord holds Left Win down for the whole gesture, and the shell opens Start when Win
+    /// is released with nothing pressed in between. The only thing pressed in between is F23 —
+    /// which this hook has just eaten — so from the shell's side Win was tapped on its own.
+    /// A bare Ctrl does nothing alone and nothing with Win, which makes it the cheapest way to
+    /// spend that "another key was pressed" flag.
+    /// </para>
+    /// <para>
+    /// Tagged as ours, so it comes straight back through this hook and is ignored. Queued
+    /// rather than called inline because synthesising input from inside a hook procedure is
+    /// how hooks re-enter themselves; it only has to land before the key is released, which is
+    /// an utterance away.
+    /// </para>
+    /// </remarks>
+    private static void DefuseStartMenu() => ThreadPool.QueueUserWorkItem(_ =>
+    {
+        keybd_event((byte)VK_CONTROL, 0, 0, InjectedTag);
+        keybd_event((byte)VK_CONTROL, 0, KEYEVENTF_KEYUP, InjectedTag);
+    });
 
     /// <summary>
     /// Collapses the side-agnostic <c>VK_SHIFT</c>/<c>VK_CONTROL</c>/<c>VK_MENU</c> codes into
