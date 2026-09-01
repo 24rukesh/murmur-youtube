@@ -179,6 +179,59 @@ dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-con
 
 ---
 
+## Installing it
+
+The release is an **MSI**, so Murmur behaves like an installed application: a Start menu
+entry, an Add/Remove Programs entry, an uninstaller, and an upgrade that replaces the previous
+version instead of sitting beside it. A bare exe is also published for anyone who wants to run
+it from a folder.
+
+```powershell
+cd windows
+dotnet build Murmur.sln -c Release
+dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output artifacts/publish
+
+dotnet tool install --global wix --version 5.0.2
+wix build installer/Murmur.wxs -arch x64 -d Version=1.5.0 `
+  -d PublishDir=<absolute path to artifacts/publish> -o artifacts/installer/Murmur-1.5.0-win-x64.msi
+```
+
+**WiX 5, not 7.** Version 7 refuses to build without accepting the Open Source Maintenance
+Fee EULA. Version 5 is the last MS-RL release and produces the same MSI.
+
+The 116 MB exe compresses to a **42 MB** MSI, because a single-file bundle is mostly
+uncompressed IL and the CAB squeezes it.
+
+### Decisions in `installer/Murmur.wxs`
+
+**Per-user, into `%LOCALAPPDATA%\Programs\Murmur`.** A per-machine install writes to Program
+Files and therefore raises UAC — and this exe is unsigned, so the prompt would say "unknown
+publisher" while asking for administrator rights, which is precisely the dialog people are
+taught to refuse. Nothing here wants machine scope: settings, history and the speech model all
+live in the user's profile already.
+
+**`AllowSameVersionUpgrades="yes"`.** Every build generates a fresh ProductCode, so
+reinstalling the same version number without this leaves the old install in place and Apps &
+features lists Murmur twice. Observed, not theorised — it happened during testing, and the
+fix was verified by installing 1.5.0 over itself and counting one entry and one shortcut.
+
+**Installed as `Murmur.exe`, published as `Murmur.App.exe`.** The project name is not the
+product name, and the product name is what shows in Task Manager.
+
+**Known wart:** despite `Scope="perUser"`, the product registers under `HKLM` rather than
+`HKCU` on a machine whose user can write there. Everything works — install, upgrade,
+uninstall, no elevation prompt — but on a shared PC another user would see an Apps & features
+entry for something they cannot run. `MSIINSTALLPERUSER=1` and `ALLUSERS=2` were both tried;
+`ALLUSERS=2` means "per-machine where permitted", which is exactly what happens. Forcing it
+needs an empty `ALLUSERS`, and was not worth another round for a single-user laptop.
+
+Verified end to end: install, Start menu shortcut, Apps & features entry, `--selftest` from
+the installed location, same-version reinstall leaving one entry, and an uninstall that
+removes the files, the shortcut folder and the registration.
+
+---
+
 ## Shipping it to someone
 
 **The release is the 116 MB exe. Nothing else.** The app installs its own model on first run.

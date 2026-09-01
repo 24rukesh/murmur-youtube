@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<!--
+  A real installed application: Start menu entry, Add/Remove Programs entry, an uninstaller,
+  and an upgrade that replaces the previous version rather than sitting beside it.
+
+  Scope="perUser" is the important decision. A per-machine install writes to Program Files and
+  therefore raises UAC, and this exe is unsigned — so the elevation prompt would say "unknown
+  publisher" while asking for administrator rights, which is the exact dialog people are told
+  never to accept. A per-user install needs no elevation at all, and the app has no reason to
+  want machine scope: it stores its settings, history and speech model under the user's own
+  profile already.
+
+  The keyboard hook and SendInput both work fine from a per-user install. What would NOT work
+  is Program Files plus a self-downloaded model, since the app cannot write beside itself
+  there — another reason this scope is the right one.
+-->
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Murmur"
+      Manufacturer="Pivot Studio"
+      Version="$(var.Version)"
+      UpgradeCode="7C4F1E2B-9A6D-4C3E-8B57-1D0A2F6E9B34"
+      Scope="perUser"
+      Compressed="yes">
+
+    <SummaryInformation Description="Push-to-talk dictation, on-device" />
+
+    <!-- Scope="perUser" alone was not enough: it laid the files down under the user's profile
+         but still registered the product in HKLM, so Apps & features would show an entry that
+         other users on the machine cannot actually run. These two properties are what
+         Windows Installer reads to decide, and setting them moves the registration to HKCU
+         where it belongs. Verified by checking which hive the uninstall key lands in. -->
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+    <Property Id="ALLUSERS" Value="2" />
+
+    <!-- Uninstall the old version before laying down the new one. Without this, installing
+         1.6 over 1.5 leaves two entries in Add/Remove Programs and two shortcuts. -->
+    <!-- AllowSameVersionUpgrades is not optional here. Every build generates a fresh
+         ProductCode, so reinstalling the same version number without it leaves the previous
+         install in place and Apps & features shows Murmur twice - observed, not theorised. -->
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of Murmur is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="MurmurIcon" SourceFile="$(var.PublishDir)\..\..\src\Murmur.App\Assets\tray.ico" />
+    <Property Id="ARPPRODUCTICON" Value="MurmurIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/24rukesh/murmur-youtube" />
+
+    <!-- %LOCALAPPDATA%\Programs is where per-user apps belong on Windows 10 and 11; it is
+         where the Store and every well-behaved per-user installer put them. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Murmur" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ShortcutFolder" Name="Murmur" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Murmur" Level="1">
+      <ComponentGroupRef Id="AppComponents" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="AppComponents">
+      <Component Directory="INSTALLFOLDER" Id="AppExecutable" Guid="B21C8D46-3F7A-4E59-9C82-5A6D1B0E4F73">
+        <!-- Published as Murmur.App.exe, installed as Murmur.exe. The project name is not the
+             product name, and the product name is what a person sees in Task Manager. -->
+        <File Id="MurmurExe" Source="$(var.PublishDir)\Murmur.App.exe" Name="Murmur.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Directory="ShortcutFolder" Id="StartMenuShortcut" Guid="E9A3B7C1-6D24-4F80-A15E-8C7B3D92F604">
+        <Shortcut Id="StartMenuEntry"
+                  Name="Murmur"
+                  Description="Push-to-talk dictation"
+                  Target="[INSTALLFOLDER]Murmur.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="MurmurIcon" />
+
+        <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
+
+        <!-- A shortcut cannot be its own key path in a per-user component, so the component
+             is anchored to a registry value instead. Standard practice, and it doubles as the
+             marker that tells Windows this component is present. -->
+        <RegistryValue Root="HKCU" Key="Software\Murmur" Name="Installed"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -22,3 +22,6 @@ artifacts/
 models/
 *.onnx
 *.nemo
+
+# WiX build outputs
+*.wixpdb
