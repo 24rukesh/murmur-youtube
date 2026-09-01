@@ -153,6 +153,61 @@ dotnet test Murmur.CrossPlatform.slnf -c Release      # ~0.5s, 63 tests
 `--no-incremental` is not optional in CI. Roslyn does not re-emit analyzer warnings on an
 incremental build, so `-warnaserror` would pass on cached results and prove nothing.
 
+**Publishing needs the Release solution build first.** The `PublishWindowsPlatformLayer`
+target looks for `Murmur.Platform.Windows.dll` at `bin\Release\net10.0-windows\`, but the
+nested MSBuild call inherits `RuntimeIdentifier=win-x64` from the publish and writes it to a
+`win-x64\` subfolder instead. CI never trips over this because it builds the solution first;
+publishing straight from a clean tree fails in `GenerateBundle` with a `FileNotFoundException`.
+
+```powershell
+dotnet build Murmur.sln -c Release
+dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output artifacts/publish
+```
+
+---
+
+## Shipping it to someone
+
+The exe alone is not usable on a machine that has no model, and telling a person to paste a
+PowerShell download loop is a way to lose them. So a release carries **one folder** with both:
+
+```
+Murmur-win-x64\
+├─ Murmur-win-x64.exe
+├─ READ ME FIRST.txt
+├─ NOTICE.txt                        attribution — CC-BY-4.0 requires it
+└─ models\parakeet-v2\               ~661 MB
+```
+
+No code makes this work: `AppContext.BaseDirectory\models\parakeet-v2` is already the second
+search path, after `%LOCALAPPDATA%`. Unzip and run.
+
+```powershell
+$s = "artifacts/bundle/Murmur-win-x64"
+New-Item -ItemType Directory -Force "$s\models\parakeet-v2" | Out-Null
+Copy-Item artifacts/publish/Murmur.App.exe "$s\Murmur-win-x64.exe"
+Copy-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2\*" "$s\models\parakeet-v2\"
+Compress-Archive "$s" artifacts/bundle/Murmur-win-x64-with-model.zip -CompressionLevel Fastest
+```
+
+Compression buys little — int8 ONNX weights are already dense — so `Fastest` saves minutes
+for about 8%: 747 MB becomes 684 MB.
+
+**The model cannot live in this repository.** `encoder.int8.onnx` is 622 MB and GitHub
+rejects any file over 100 MB on push; Git LFS would need paid quota for a file that size. It
+belongs in a release asset, which is what `.gitignore`'s `models/` and `*.onnx` entries are
+protecting.
+
+To confirm a bundle resolves its own model rather than one already installed on the build
+machine, hide the user-profile copy and check what `--selftest` reports:
+
+```powershell
+Rename-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2" parakeet-v2-hidden
+.\artifacts\bundle\Murmur-win-x64\Murmur-win-x64.exe --selftest   # "model:" must be the bundle path
+Rename-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2-hidden" parakeet-v2
+```
+
 ---
 
 ## <a id="honesty"></a>Honesty about what is verified
