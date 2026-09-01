@@ -96,6 +96,35 @@ public interface ITranscriber : IAsyncDisposable
 }
 
 /// <summary>
+/// Pauses whatever is playing through the speakers while dictation is running.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Not a convenience. A laptop microphone hears the laptop speakers, so music playing during
+/// dictation is transcribed along with the speech — and the correction dictionary has no way
+/// to tell a lyric from a word the user said.
+/// </para>
+/// <para>
+/// <see cref="TryPause"/> must be honest about whether it actually paused anything, because
+/// <see cref="ResumePlayback"/> is only safe to call when it did. Media transport is a toggle: a
+/// resume sent to something that was already stopped starts it playing, which is worse than
+/// doing nothing at all.
+/// </para>
+/// </remarks>
+public interface IMediaPlayback
+{
+    /// <summary>Pauses playback if something is audibly playing.</summary>
+    /// <returns>True if playback was paused, and only then may <see cref="ResumePlayback"/> follow.</returns>
+    bool TryPause();
+
+    /// <summary>Resumes what <see cref="TryPause"/> paused.</summary>
+    /// <remarks>Not named <c>Resume</c>: that is a reserved word in VB, which CA1716 flags
+    /// on any interface member - the same reason <see cref="IHotkeySource.StopListening"/>
+    /// is not called <c>Stop</c>.</remarks>
+    void ResumePlayback();
+}
+
+/// <summary>
 /// Wall-clock time, behind an interface so timing logic is testable.
 /// </summary>
 /// <remarks>

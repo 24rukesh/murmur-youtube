@@ -77,9 +77,16 @@ public sealed class Composition : IAsyncDisposable
                 ? new ParakeetTranscriber(modelDirectory)
                 : new UnavailableTranscriber();
 
+            // Read once here rather than per utterance: the controller is cheap to hold and
+            // costs nothing when idle, and the engine already asks it before every recording.
+            var media = settings.Data.PauseMediaWhileDictating
+                ? PlatformFactory.CreateMediaPlayback()
+                : null;
+
             engine = new DictationEngine(
                 capture!, hotkey!, transcriber, injector!,
-                () => dictionary.Entries);
+                () => dictionary.Entries,
+                media: media);
 
             engine.Completed += (_, result) =>
             {

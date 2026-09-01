@@ -134,6 +134,10 @@ internal static class PlatformFactory
     public static ITextInjector? CreateTextInjector() =>
         Create<ITextInjector>("SendInputTextInjector", []);
 
+    /// <summary>Creates the media-key playback controller, or null off Windows.</summary>
+    public static IMediaPlayback? CreateMediaPlayback() =>
+        Create<IMediaPlayback>("MediaKeyPlayback", []);
+
     [UnconditionalSuppressMessage(
         "Trimming",
         "IL2026:RequiresUnreferencedCode",

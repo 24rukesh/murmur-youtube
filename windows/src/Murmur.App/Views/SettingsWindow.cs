@@ -38,6 +38,7 @@ public sealed class SettingsWindow : Window
     private readonly AppSettings _settings;
     private readonly StackPanel _keyRow;
     private readonly TextBlock _keyWarning;
+    private bool _downloading;
 
     /// <summary>Builds the settings window.</summary>
     public SettingsWindow(AppSettings settings)
@@ -111,49 +112,142 @@ public sealed class SettingsWindow : Window
                         v => Save(_settings.Data with { InjectText = v })),
                     Toggle("Keep a transcript history", _settings.Data.KeepHistory,
                         v => Save(_settings.Data with { KeepHistory = v })),
+                    Toggle("Pause music and video while dictating",
+                        _settings.Data.PauseMediaWhileDictating,
+                        v => Save(_settings.Data with { PauseMediaWhileDictating = v })),
+                    Note("The microphone hears the speakers, so anything playing lands in the "
+                       + "transcript. Takes effect on restart."),
                 },
             }),
         },
     };
 
-    private static StackPanel BuildModelSection()
+    private StackPanel BuildModelSection()
     {
         var located = ParakeetTranscriber.Locate();
         var found = located is not null;
+
+        var lamp = new Lamp
+        {
+            IsLit = found,
+            LampColor = found ? Tokens.Colors.MeterGreen : Tokens.Colors.MeterAmber,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var caption = new TextBlock
+        {
+            Text = found ? "Parakeet ready" : "Model not installed",
+            FontFamily = Tokens.Fonts.Grotesque,
+            FontSize = Tokens.Fonts.Body,
+            Foreground = Tokens.Brushes.Ink,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
 
         var status = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = Tokens.Space.Snug,
-            Children =
-            {
-                new Lamp
-                {
-                    IsLit = found,
-                    LampColor = found ? Tokens.Colors.MeterGreen : Tokens.Colors.MeterAmber,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                new TextBlock
-                {
-                    Text = found ? "Parakeet ready" : "Model not installed",
-                    FontFamily = Tokens.Fonts.Grotesque,
-                    FontSize = Tokens.Fonts.Body,
-                    Foreground = Tokens.Brushes.Ink,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-            },
+            Children = { lamp, caption },
         };
 
         var detail = found
             // Showing the resolved path matters: "model not found" is unactionable without
             // knowing which directory was actually checked.
             ? Note($"Loaded from {located}")
-            : Note("Windows has no built-in speech engine equivalent to Apple's, so Murmur "
-                 + "cannot transcribe until the Parakeet model is downloaded (~661 MB). "
-                 + "See docs/PARAKEET-WINDOWS.md. Expected in:\n"
-                 + string.Join("\n", ParakeetTranscriber.DefaultSearchPaths()));
+            : Note("Windows has no built-in speech engine, so Murmur cannot transcribe until "
+                 + "the Parakeet model is installed. It is a 661 MB one-time download, "
+                 + "fetched straight from the publisher and kept in your user folder. "
+                 + "Transcription itself never touches the network.");
 
-        return new StackPanel { Spacing = Tokens.Space.Snug, Children = { status, detail } };
+        var panel = new StackPanel { Spacing = Tokens.Space.Snug, Children = { status, detail } };
+
+        if (!found) panel.Children.Add(BuildDownloader(lamp, caption, detail));
+
+        return panel;
+    }
+
+    /// <summary>
+    /// The install step: a button, a bar, and a line of plain text.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not a wizard. There is exactly one thing to fetch and one place it can go,
+    /// so anything more than a button would be ceremony around a single decision the user has
+    /// already made by opening this window.
+    /// </remarks>
+    private StackPanel BuildDownloader(Lamp lamp, TextBlock caption, TextBlock detail)
+    {
+        var bar = new ProgressBar
+        {
+            Minimum = 0,
+            Maximum = 1,
+            Value = 0,
+            Height = 6,
+            IsVisible = false,
+            Foreground = new SolidColorBrush(Tokens.Colors.MeterGreen),
+        };
+
+        var line = Note(string.Empty);
+        line.IsVisible = false;
+
+        var button = new TransportKey { Content = "DOWNLOAD MODEL", EngagedColor = Tokens.Colors.Ink };
+
+        button.Click += async (_, _) =>
+        {
+            if (_downloading) return;
+            _downloading = true;
+
+            button.IsEnabled = false;
+            bar.IsVisible = true;
+            line.IsVisible = true;
+            line.Text = "Starting…";
+
+            // Marshalled back to the UI thread by Progress<T>, which captures this context at
+            // construction — the download itself runs off it.
+            var progress = new Progress<ModelDownloadProgress>(p =>
+            {
+                if (p.Fraction is { } fraction)
+                {
+                    bar.IsIndeterminate = false;
+                    bar.Value = fraction;
+                }
+                else
+                {
+                    bar.IsIndeterminate = true;
+                }
+
+                line.Text = p.ToString();
+            });
+
+            try
+            {
+                // Its own client, with a timeout long enough for 622 MB on a slow line. The
+                // default 100 seconds would abort every download on anything but fast fibre.
+                using var http = new HttpClient { Timeout = TimeSpan.FromHours(2) };
+                var directory = await ModelDownloader.DownloadAsync(http, progress: progress).ConfigureAwait(true);
+
+                lamp.IsLit = true;
+                lamp.LampColor = Tokens.Colors.MeterGreen;
+                caption.Text = "Parakeet ready";
+                detail.Text = $"Loaded from {directory}";
+                bar.IsVisible = false;
+                line.Text = "Installed. Restart Murmur to load it.";
+            }
+            catch (Exception e) when (e is HttpRequestException or IOException or TaskCanceledException)
+            {
+                // Nothing partial survives — the downloader deletes its own .part files — so
+                // pressing the button again is a clean retry rather than a repair.
+                bar.IsVisible = false;
+                line.Text = $"Download failed: {e.Message} Press to try again.";
+                button.IsEnabled = true;
+                _downloading = false;
+            }
+        };
+
+        return new StackPanel
+        {
+            Spacing = Tokens.Space.Snug,
+            Children = { button, bar, line },
+        };
     }
 
     private void SelectKey(int key, string? warning)

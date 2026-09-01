@@ -29,6 +29,15 @@ public partial class App : Application
             // menu or the app menu.
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
+            // First run, or a machine with no model: open Settings on top of the main window
+            // rather than letting the user press the key and get nothing. Windows ships no
+            // speech engine, so an install step is unavoidable — the least it can do is
+            // present itself instead of waiting to be found.
+            if (!Composition.IsModelInstalled)
+            {
+                _main.Opened += OnFirstRun;
+            }
+
             // Disposing tears down the keyboard hook and releases the audio device. Leaving
             // a low-level hook installed after exit is the kind of thing that makes a
             // machine feel broken until it is rebooted.
@@ -40,6 +49,20 @@ public partial class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>Shows Settings once, so the model can be installed.</summary>
+    /// <remarks>
+    /// Unsubscribes immediately: the window can be opened again after being closed to the
+    /// tray, and an installer that reappears every time is an installer people learn to
+    /// dismiss without reading.
+    /// </remarks>
+    private void OnFirstRun(object? sender, EventArgs e)
+    {
+        if (_main is null || _composition is null) return;
+
+        _main.Opened -= OnFirstRun;
+        _ = new SettingsWindow(_composition.Settings).ShowDialog(_main);
     }
 
     private void OnTrayShow(object? sender, EventArgs e) => ShowMain();

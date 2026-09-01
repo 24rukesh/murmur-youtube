@@ -173,3 +173,34 @@ public sealed class FakeClock : IClock
     /// <summary>Moves time forward.</summary>
     public void Advance(TimeSpan by) => Now += by;
 }
+
+/// <summary>
+/// Records what the engine asked of media playback, and whether anything was playing.
+/// </summary>
+/// <remarks>
+/// The pairing is the thing worth testing: a <see cref="ResumePlayback"/> without a preceding
+/// successful pause is what starts music on a machine that was silent.
+/// </remarks>
+public sealed class FakeMediaPlayback : IMediaPlayback
+{
+    /// <summary>Whether something is playing, so <see cref="TryPause"/> has work to do.</summary>
+    public bool IsPlaying { get; set; } = true;
+
+    /// <summary>How many times a pause actually happened.</summary>
+    public int Paused { get; private set; }
+
+    /// <summary>How many times a resume was sent.</summary>
+    public int Resumed { get; private set; }
+
+    /// <inheritdoc />
+    public bool TryPause()
+    {
+        if (!IsPlaying) return false;
+
+        Paused++;
+        return true;
+    }
+
+    /// <inheritdoc />
+    public void ResumePlayback() => Resumed++;
+}

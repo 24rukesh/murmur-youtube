@@ -24,6 +24,16 @@ public sealed record SettingsData
 
     /// <summary>Whether to keep a transcript history.</summary>
     public bool KeepHistory { get; init; } = true;
+
+    /// <summary>
+    /// Whether to pause music and video while dictating. On by default.
+    /// </summary>
+    /// <remarks>
+    /// The microphone hears the speakers, so audio playing during an utterance ends up in the
+    /// transcript. Off is for people dictating into a headset, where the speakers are not in
+    /// the room with the microphone.
+    /// </remarks>
+    public bool PauseMediaWhileDictating { get; init; } = true;
 }
 
 /// <summary>Settings, persisted as JSON.</summary>

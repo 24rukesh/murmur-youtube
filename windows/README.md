@@ -80,6 +80,18 @@ Not every vendor ships this chord; some send Win+C. To see what a particular mac
 
 `0x86` in that trace means `COPILOT` will work on that keyboard.
 
+**Playback is paused while you dictate.** The laptop microphone hears the laptop speakers,
+so music playing during an utterance is transcribed along with the speech — and nothing
+downstream can tell a lyric from a word the user meant. On by default; off for headset users,
+in Settings.
+
+Windows has no supported way to tell an arbitrary app to pause, so the media transport key is
+used: every player already listens for it, with no permission and no per-app integration. But
+that key is a *toggle*, and sent blind it starts music on a machine that was deliberately
+silent — a worse bug than failing to pause. So WASAPI is asked first whether any other process
+is actually rendering audio, and the key is sent only if something is. `Resume` is only ever
+called when a pause really happened.
+
 **CPU-only inference.** sherpa-onnx ships no GPU package; DirectML is five versions behind
 and forbids the variable tensor shapes this model requires; CUDA would force every user to
 install a toolkit. On CPU with int8 weights, transcription runs ~40× faster than real time.
@@ -103,7 +115,7 @@ windows/
 ├─ global.json                    SDK pin
 ├─ src/
 │  ├─ Murmur.Dictionary/          corrections + biasing          net10.0
-│  ├─ Murmur.Abstractions/        the four platform interfaces   net10.0
+│  ├─ Murmur.Abstractions/        the platform interfaces        net10.0
 │  ├─ Murmur.Core/                engine, segmenter, storage     net10.0
 │  ├─ Murmur.Speech/              Parakeet via sherpa-onnx       net10.0
 │  ├─ Murmur.Testing/             fakes for the interfaces       net10.0
@@ -111,8 +123,8 @@ windows/
 │  └─ Murmur.Platform.Windows/    the ONLY Win32 code            net10.0-windows
 └─ tests/
    ├─ Murmur.Dictionary.Tests/    the shared vectors             24 tests
-   ├─ Murmur.Core.Tests/          engine, chunking, storage      26 tests
-   └─ Murmur.App.Tests/           headless Avalonia UI           13 tests
+   ├─ Murmur.Core.Tests/          engine, chunking, storage      28 tests
+   └─ Murmur.App.Tests/           headless UI + model download   17 tests
 ```
 
 **Only one project targets `-windows`.** Everything else is platform-neutral, so `CA1416`
@@ -147,7 +159,7 @@ builds and tests normally, including the full UI suite:
 
 ```bash
 cd windows
-dotnet test Murmur.CrossPlatform.slnf -c Release      # ~0.5s, 63 tests
+dotnet test Murmur.CrossPlatform.slnf -c Release      # ~0.5s, 69 tests
 ```
 
 `--no-incremental` is not optional in CI. Roslyn does not re-emit analyzer warnings on an
@@ -169,68 +181,48 @@ dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-con
 
 ## Shipping it to someone
 
-The exe alone is useless on a machine with no model, and telling a person to paste a
-PowerShell download loop is a way to lose them. So the shipped artifact is **one file** with
-the model inside it — no folder to keep together, nothing to unzip:
+**The release is the 116 MB exe. Nothing else.** The app installs its own model on first run.
 
-```powershell
-# Put the weights where the csproj looks, then publish with everything folded in.
-Copy-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2\*" src\Murmur.App\models\parakeet-v2\
-dotnet build Murmur.sln -c Release
-dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=true -p:IncludeAllContentForSelfExtract=true --output artifacts/onefile
-```
+The alternative was tried and abandoned: `-p:IncludeAllContentForSelfExtract=true` folds the
+weights into the binary and genuinely works — a 748 MB single file, model resolving out of
+`%TEMP%\.net\<app>\<hash>\`, no setup step at all. It was dropped because the cost lands
+in the wrong places. Every release becomes a 748 MB re-download for a one-line code change,
+the machine carries ~1.5 GB (the exe plus its extraction), and the build takes on
+redistributing someone else's CC-BY-4.0 weights along with the attribution duty that follows
+them. Fetching once from the publisher is smaller in every direction.
 
-`IncludeAllContentForSelfExtract` is the whole trick: it bundles content files, not just
-assemblies and native libraries, and the host unpacks them to
-`%TEMP%\.net\<app>\<hash>\` at launch — where `AppContext.BaseDirectory` then points. Since
-`AppContext.BaseDirectory\models\parakeet-v2` was already a search path, **no code knows any
-of this is happening.**
+So on first launch, if no model is found, Settings opens on top of the main window with a
+DOWNLOAD MODEL button. `ModelDownloader` pulls the four files straight from the Hugging Face
+repository into `%LOCALAPPDATA%\Murmur\models\parakeet-v2\` — no admin rights, so it works
+from Program Files.
 
-The model files are gitignored and the `<Content>` item is guarded by `Exists(...)`, so CI —
-which has no weights — keeps publishing the small 116 MB exe unchanged.
+Two details there are load-bearing:
 
-Measured, not estimated:
+**Every file lands as `.part` and is renamed only when the last byte is written.** A
+half-downloaded encoder satisfies `ParakeetTranscriber.IsComplete`, and sherpa-onnx then dies
+with an opaque protobuf parse error the first time the user speaks — hours later, reading like
+a corrupt build rather than a missing byte range. A short body is caught explicitly too: a
+server that simply stops is not a socket error. Interrupted downloads leave nothing behind, so
+the button is a clean retry rather than a repair.
 
-| | |
-|---|---|
-| Exe | 748 MB |
-| First launch | 3.1 s, extracting 775 MB |
-| Later launches | 0.16 s, cache reused |
-| Disk once settled | ~1.5 GB — the exe plus its extraction |
+**The progress bar is weighted by bytes, not files.** The encoder is 622 MB of a 661 MB
+download; a per-file bar would sit at 0% for the entire wait and then jump to 100%, which is
+the bar that makes people kill an installer.
 
-That extraction lives in `%TEMP%`, so a disk cleaner can delete it. Nothing breaks; the next
-launch just pays the 3 s again.
-
-**The model cannot live in this repository.** `encoder.int8.onnx` is 622 MB and GitHub
-rejects any file over 100 MB on push; Git LFS would need paid quota for a file that size. It
-belongs in a release asset, which is what `.gitignore`'s `models/` and `*.onnx` entries are
-protecting.
-
-To confirm the exe really carries its own model, run it somewhere with no `models` folder
-beside it *and* with the user-profile copy hidden — otherwise a pass proves nothing:
-
-```powershell
-Rename-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2" parakeet-v2-hidden
-.\artifacts\onefile\Murmur.App.exe --selftest    # "model:" must be a path under %TEMP%\.net
-Rename-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2-hidden" parakeet-v2
-```
-
-Redistributing the weights binds the build to CC-BY-4.0's attribution condition, so a release
-that carries them must carry the attribution too — in the notes, since there is no longer a
-folder to put a `NOTICE.txt` in.
-
----
+`ModelDownloader.DownloadAsync` takes the install directory as a parameter. That is not
+premature generality: `SpecialFolder.LocalApplicationData` resolves through the shell and
+ignores the environment variable, so without it a test writes into the real installation —
+which is exactly what happened before the parameter existed.
 
 ## <a id="honesty"></a>Honesty about what is verified
 
-**Verified, on Windows, every push:** 63 tests pass — 24 dictionary (the shared vectors),
-26 core (dictation state machine, audio chunking, all three storage formats), 13 headless
-Avalonia UI. CI then publishes a self-contained ~116 MB executable, **runs it**, and the
+**Verified, on Windows, every push:** 69 tests pass — 24 dictionary (the shared vectors),
+28 core (dictation state machine, audio chunking, all three storage formats, media pausing),
+17 headless Avalonia UI and model-download handling. CI then publishes a self-contained ~116 MB executable, **runs it**, and the
 binary reports back that the dictionary works, the source-generated JSON round-trips, and
 the Windows platform layer loads and constructs out of the bundle.
 
-**Verified on macOS, in ~0.5s:** the same 63 tests. The UI genuinely runs headless here,
+**Verified on macOS, in ~0.5s:** the same 69 tests. The UI genuinely runs headless here,
 which is why bugs like a `Render` method mutating a property get caught while writing them
 rather than three CI round-trips later.
 

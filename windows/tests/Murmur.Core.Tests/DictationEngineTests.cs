@@ -142,6 +142,43 @@ public sealed class DictationEngineTests
             "Murmur.Core must stay platform-neutral: " +
             string.Join(", ", result.FailingTypeNames ?? []));
     }
+
+    [Fact]
+    public async Task Playing_media_is_paused_for_the_recording_and_resumed_after()
+    {
+        var hotkey = new FakeHotkeySource();
+        var media = new FakeMediaPlayback { IsPlaying = true };
+
+        await using var engine = new DictationEngine(
+            FakeAudioCapture.Tone(0.5), hotkey, new FakeTranscriber("hello"),
+            new RecordingTextInjector(), () => [], new FakeClock(), media);
+
+        await DictateAsync(hotkey, engine);
+
+        media.Paused.ShouldBe(1);
+        media.Resumed.ShouldBe(1);
+    }
+
+    /// <summary>
+    /// The one that matters. Media transport is a toggle, so resuming when nothing was paused
+    /// starts playing music on a machine that was deliberately silent.
+    /// </summary>
+    [Fact]
+    public async Task Silence_is_left_alone_rather_than_started()
+    {
+        var hotkey = new FakeHotkeySource();
+        var media = new FakeMediaPlayback { IsPlaying = false };
+
+        await using var engine = new DictationEngine(
+            FakeAudioCapture.Tone(0.5), hotkey, new FakeTranscriber("hello"),
+            new RecordingTextInjector(), () => [], new FakeClock(), media);
+
+        await DictateAsync(hotkey, engine);
+
+        media.Paused.ShouldBe(0);
+        media.Resumed.ShouldBe(0);
+    }
+
 }
 
 /// <summary>Chunking behaviour around the encoder's hard limit.</summary>

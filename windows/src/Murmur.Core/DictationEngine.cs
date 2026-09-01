@@ -47,12 +47,14 @@ public sealed class DictationEngine : IAsyncDisposable
     private readonly ITranscriber _transcriber;
     private readonly ITextInjector _injector;
     private readonly IClock _clock;
+    private readonly IMediaPlayback? _media;
     private readonly Func<IReadOnlyList<DictionaryEntry>> _dictionary;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private CancellationTokenSource? _recording;
     private List<float>? _buffer;
     private DateTimeOffset _startedAt;
+    private bool _pausedMedia;
 
     /// <summary>Current state.</summary>
     public DictationState State { get; private set; } = DictationState.Idle;
@@ -76,13 +78,18 @@ public sealed class DictationEngine : IAsyncDisposable
     /// a restart.
     /// </param>
     /// <param name="clock">Time source; defaults to the system clock.</param>
+    /// <param name="media">
+    /// Pauses playback for the duration of a recording. Optional: null simply leaves whatever
+    /// is playing alone, which is what happens off Windows and when the user turns it off.
+    /// </param>
     public DictationEngine(
         IAudioCapture capture,
         IHotkeySource hotkey,
         ITranscriber transcriber,
         ITextInjector injector,
         Func<IReadOnlyList<DictionaryEntry>> dictionary,
-        IClock? clock = null)
+        IClock? clock = null,
+        IMediaPlayback? media = null)
     {
         _capture = capture;
         _hotkey = hotkey;
@@ -90,6 +97,7 @@ public sealed class DictationEngine : IAsyncDisposable
         _injector = injector;
         _dictionary = dictionary;
         _clock = clock ?? SystemClock.Instance;
+        _media = media;
 
         _hotkey.Pressed += OnPressed;
         _hotkey.Released += OnReleased;
@@ -126,6 +134,11 @@ public sealed class DictationEngine : IAsyncDisposable
             _buffer = [];
             _startedAt = _clock.Now;
             _recording = new CancellationTokenSource();
+
+            // Before the microphone opens, not after: the speakers are in the room with it,
+            // and anything still playing when capture starts lands in the transcript.
+            _pausedMedia = _media?.TryPause() ?? false;
+
             SetState(DictationState.Recording);
         }
         finally
@@ -176,6 +189,16 @@ public sealed class DictationEngine : IAsyncDisposable
             samples = _buffer;
             _buffer = null;
             Level = 0;
+
+            // At release, not after transcription. The microphone is shut by now, so there is
+            // nothing left to contaminate, and waiting would leave the music off for the
+            // length of a transcribe for no reason.
+            if (_pausedMedia)
+            {
+                _pausedMedia = false;
+                _media?.ResumePlayback();
+            }
+
             SetState(DictationState.Transcribing);
         }
         finally
