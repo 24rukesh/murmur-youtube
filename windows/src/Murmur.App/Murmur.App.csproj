@@ -15,6 +15,20 @@
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
+  <!-- An optional local model, folded into the exe.
+
+       Present only if someone has put the weights in models\parakeet-v2 before publishing —
+       they are gitignored and 661 MB, so CI never sees them and keeps producing the small
+       exe. Publish with -p:IncludeAllContentForSelfExtract=true to get the one-file build
+       that needs no separate download; without that flag these are copied beside the exe
+       instead, which the app finds equally well.
+
+       No code knows about this: AppContext.BaseDirectory\models\parakeet-v2 is already a
+       search path, and in self-extract mode BaseDirectory is the extraction directory. -->
+  <ItemGroup Condition="Exists('models\parakeet-v2\tokens.txt')">
+    <Content Include="models\parakeet-v2\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />

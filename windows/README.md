@@ -169,44 +169,56 @@ dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-con
 
 ## Shipping it to someone
 
-The exe alone is not usable on a machine that has no model, and telling a person to paste a
-PowerShell download loop is a way to lose them. So a release carries **one folder** with both:
-
-```
-Murmur-win-x64\
-├─ Murmur-win-x64.exe
-├─ READ ME FIRST.txt
-├─ NOTICE.txt                        attribution — CC-BY-4.0 requires it
-└─ models\parakeet-v2\               ~661 MB
-```
-
-No code makes this work: `AppContext.BaseDirectory\models\parakeet-v2` is already the second
-search path, after `%LOCALAPPDATA%`. Unzip and run.
+The exe alone is useless on a machine with no model, and telling a person to paste a
+PowerShell download loop is a way to lose them. So the shipped artifact is **one file** with
+the model inside it — no folder to keep together, nothing to unzip:
 
 ```powershell
-$s = "artifacts/bundle/Murmur-win-x64"
-New-Item -ItemType Directory -Force "$s\models\parakeet-v2" | Out-Null
-Copy-Item artifacts/publish/Murmur.App.exe "$s\Murmur-win-x64.exe"
-Copy-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2\*" "$s\models\parakeet-v2\"
-Compress-Archive "$s" artifacts/bundle/Murmur-win-x64-with-model.zip -CompressionLevel Fastest
+# Put the weights where the csproj looks, then publish with everything folded in.
+Copy-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2\*" src\Murmur.App\models\parakeet-v2\
+dotnet build Murmur.sln -c Release
+dotnet publish src/Murmur.App/Murmur.App.csproj -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:IncludeAllContentForSelfExtract=true --output artifacts/onefile
 ```
 
-Compression buys little — int8 ONNX weights are already dense — so `Fastest` saves minutes
-for about 8%: 747 MB becomes 684 MB.
+`IncludeAllContentForSelfExtract` is the whole trick: it bundles content files, not just
+assemblies and native libraries, and the host unpacks them to
+`%TEMP%\.net\<app>\<hash>\` at launch — where `AppContext.BaseDirectory` then points. Since
+`AppContext.BaseDirectory\models\parakeet-v2` was already a search path, **no code knows any
+of this is happening.**
+
+The model files are gitignored and the `<Content>` item is guarded by `Exists(...)`, so CI —
+which has no weights — keeps publishing the small 116 MB exe unchanged.
+
+Measured, not estimated:
+
+| | |
+|---|---|
+| Exe | 748 MB |
+| First launch | 3.1 s, extracting 775 MB |
+| Later launches | 0.16 s, cache reused |
+| Disk once settled | ~1.5 GB — the exe plus its extraction |
+
+That extraction lives in `%TEMP%`, so a disk cleaner can delete it. Nothing breaks; the next
+launch just pays the 3 s again.
 
 **The model cannot live in this repository.** `encoder.int8.onnx` is 622 MB and GitHub
 rejects any file over 100 MB on push; Git LFS would need paid quota for a file that size. It
 belongs in a release asset, which is what `.gitignore`'s `models/` and `*.onnx` entries are
 protecting.
 
-To confirm a bundle resolves its own model rather than one already installed on the build
-machine, hide the user-profile copy and check what `--selftest` reports:
+To confirm the exe really carries its own model, run it somewhere with no `models` folder
+beside it *and* with the user-profile copy hidden — otherwise a pass proves nothing:
 
 ```powershell
 Rename-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2" parakeet-v2-hidden
-.\artifacts\bundle\Murmur-win-x64\Murmur-win-x64.exe --selftest   # "model:" must be the bundle path
+.\artifacts\onefile\Murmur.App.exe --selftest    # "model:" must be a path under %TEMP%\.net
 Rename-Item "$env:LOCALAPPDATA\Murmur\models\parakeet-v2-hidden" parakeet-v2
 ```
+
+Redistributing the weights binds the build to CC-BY-4.0's attribution condition, so a release
+that carries them must carry the attribution too — in the notes, since there is no longer a
+folder to put a `NOTICE.txt` in.
 
 ---
 
